@@ -1,0 +1,160 @@
+# Self-supervised representation of lifetime work histories and career typology:
+# configuration for typology/01_worklife.py ... 05_derived.py.
+#
+# All coding values and decision thresholds are set here, not in the scripts.
+
+# -- Paths (relative paths are resolved against the repository root) -------
+paths:
+  data: data                    # UK Biobank extracts
+  out: results/typology         # outputs (derived/, tables/, qc/, models/, logs/)
+  refs: references              # published external resources (CAMSIS)
+
+files:
+  employment: ukb_employment_history_data.csv   # online employment-history fields
+  cov_baseline: ukb_covariates_baseline.csv     # baseline covariates
+  cov_raw: ukb_covariates_raw.csv               # raw Qualifications (field 6138)
+  camsis: ukbjobs_soc2000_occ_status.csv        # in references/: soc2000, mcamsis, fcamsis
+  # UKB Category 123 (Online follow-up > Work environment): date the employment
+  # questionnaire was completed, column `When_occupational_data_entered__0_0`.
+  work_env: ukb_work_environment_data.csv
+
+# -- Employment-history fields (column prefix; columns are <Name>__<inst>_<index>)
+employment:
+  n_jobs: Number_of_jobs_held           # field 22599
+  n_gaps: Number_of_gap_periods         # 22661
+  job_start: Year_job_started           # 22602
+  job_end: Year_job_ended               # 22603
+  soc4: Job_code_historical             # 22617, 4-digit SOC2000
+  oscar8: Job_coding                    # 22601, 8-digit OSCAR code
+  hours_cat: Work_hours_lumped_category # 22604
+  hours_exact: Work_hours_per_week_exact_value  # 22605
+  shift_any: Job_involved_shift_work    # 22620
+  shift_day: Day_shifts_worked          # 22630
+  shift_mixed: Mixture_of_day_and_night_shifts_worked   # 22640
+  shift_night: Night_shifts_worked      # 22650
+  gap_code: Gap_coding                  # 22660
+  gap_start: Year_gap_started
+  gap_end: Year_gap_ended
+  exposures:                            # 22606-22615, coding 493
+    noisy: Workplace_very_noisy
+    cold: Workplace_very_cold
+    hot: Workplace_very_hot
+    dusty: Workplace_very_dusty
+    fumes: Workplace_full_of_chemical_or_other_fumes
+    cigarette: Workplace_had_a_lot_of_cigarette_smoke_from_other_people_smoking
+    asbestos: Worked_with_materials_containing_asbestos
+    paints: Worked_with_paints_thinners_or_glues
+    pesticides: Worked_with_pesticides
+    diesel: Workplace_had_a_lot_of_diesel_exhaust
+  breath_problem: Breathing_problems_during_period_of_job   # 22616
+
+# -- UKB codings (negative exposure codes are frequency levels, not missing) --
+codings:
+  exposure_ordinal: {0: 0, -131: 1, -141: 2}   # Rarely / Sometimes / Often
+  exposure_dk: -121                             # Do not know -> NaN + indicator channel
+  hours_midpoint: {-1520: 17.5, -2030: 25.0, -3040: 35.0, 4000: 48.0}
+  shift_notdone: 9              # coding 489: 9 = shift type not worked
+  gap_retirement: 108           # retirement: career end point, not a break
+  gap_health: 106               # unable to work because of sickness or disability
+  gap_codes: [101, 102, 103, 105, 106, 107, 108, -717, -818, -121]
+  ongoing: -313                 # still ongoing at questionnaire completion
+
+# -- Cohort and data-quality rules -------------------------------------------
+cohort:
+  min_work_age: 14              # job starting before birth year + 14 -> dropped
+  max_overlap: 2                # > 2 concurrent jobs -> flag_overlap
+  min_coverage: 0.5             # coverage < 0.5 -> flag_incomplete
+  age_min: 16
+  # Upper age of the panel; also caps age at questionnaire completion in career_end.
+  age_max: 75
+  # Fallback for ongoing records when the questionnaire date is missing.
+  fill_year: 2015
+  entry_date_col: When_occupational_data_entered__0_0
+  n_folds: 5
+  long_hours_threshold: 48      # hours per week counted as long hours
+
+# -- Sex-specific modelling --------------------------------------------------
+sex_split:
+  enabled: true
+  labels: [Female, Male]
+
+# -- Transformer encoder -----------------------------------------------------
+model:
+  d_model: 192
+  n_layers: 6
+  n_heads: 6
+  ffn: 768
+  max_len: 64                   # [CLS] + up to 63 person-years
+  dropout: 0.1
+  # Occupation granularity: SOC2000 unit groups (353 groups).
+  soc_level: soc_l4
+  # Hierarchical embedding: emb(soc4) = E4[soc4] + E3[soc4//10] + E2[soc4//100]
+  # + E1[soc4//1000]; rare unit groups are shrunk towards their parent groups.
+  hierarchical_soc: true
+  # Weights of the masked-occupation loss at each SOC level.
+  soc_loss_weights: {soc_l1: 0.1, soc_l2: 0.2, soc_l3: 0.3, soc_l4: 1.0}
+  # LayerNorm on the [CLS] output; removes the mean and scale of the pooled
+  # vector, where the average of age embeddings (career length) mainly lives.
+  cls_layernorm: true
+
+ssl:                            # self-supervised pre-training
+  seed: 0
+  tasks:
+    masked_soc:  {weight: 1.0, mask_ratio: 0.15}
+    masked_span: {weight: 1.0, span_min: 2, span_max: 5}
+    # Next occupation + Bernoulli hazard of an occupational change in the next
+    # year; pos_weight offsets the low base rate.
+    next_event:  {weight: 0.5, hazard_pos_weight: 15.0}
+    # Multi-label prediction of all occupations held, from [CLS]. Required:
+    # it is the only objective that supervises [CLS].
+    bag_of_occupations: {weight: 0.3, pos_weight: 20.0}
+  epochs: 80
+  patience: 5
+  early_stop_rtol: 1.0e-4       # relative improvement required on validation loss
+  batch_size: 512
+  lr: 3.0e-4
+  weight_decay: 0.01
+  val_frac: 0.15                # share of participants held out for early stopping
+  collapse_checks:
+    min_effective_rank: 10      # dimensional collapse if below
+    # Upper limit for the R^2 of the first principal component on sequence
+    # length (representation organised by sequence length if above).
+    max_seqlen_pc1_r2: 0.10
+
+# -- Clustering ----------------------------------------------------------------
+cluster:
+  # Leiden on an unweighted kNN graph of the raw 192-d representation (not on
+  # UMAP coordinates, which preserve neither distance nor density).
+  # Resolution is fixed in advance and not tuned.
+  resolution: 0.2
+  knn_k: 30
+  # Communities smaller than max(min_cluster_frac * n, min_cluster_n) are merged
+  # into the community with the nearest centroid.
+  min_cluster_frac: 0.005
+  min_cluster_n: 500
+  small_cluster_warn_n: 500
+  bootstrap_n: 20               # bootstrap resamples of the clustering procedure
+  # Reference ARI line; read together with the null baseline because ARI
+  # decreases mechanically with the number of clusters.
+  min_ari: 0.60
+  birth_cohort_split: 1950      # split year for the birth-cohort stratification
+  # Warning thresholds (reported, not used to filter partitions).
+  warn_largest_cluster_frac: 0.60
+  warn_nmi_career_end: 0.25     # NMI of types vs career-end deciles
+  warn_nmi_mode_soc: 0.50       # NMI of types vs modal occupation
+  warn_cluster_soc_purity: 0.70 # share of the modal occupation within a type
+
+# -- Profiles --------------------------------------------------------------------
+profiles:
+  camsis_slope_flat: 0.05       # |CAMSIS slope| below this -> "flat"
+  # Axes used for description and labelling only, never to choose a partition.
+  primary_axes: [camsis_mean, exposure_breadth, longest_agent_years]
+  # Characteristic occupations are ranked by lift (share in type / share in
+  # cohort); this minimum share prevents rare codes from dominating.
+  soc_lift_min_frac: 0.02
+  # High exposure of a type = enrichment relative to all participants of the
+  # same sex, with a minimum within-type share.
+  peak_exposure_enrichment: 1.5
+  peak_exposure_min_frac: 0.05
+
+seed: 42

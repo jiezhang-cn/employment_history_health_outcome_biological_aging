@@ -1,0 +1,198 @@
+# Career types x health outcomes: configuration of the outcome analyses.
+#
+# All thresholds, codings and dates are set here. Cohort definition, sex split
+# and type labels come from the typology config (config.yaml at the repository
+# root). Relative paths are resolved against the repository root.
+
+# -- Paths ---------------------------------------------------------------------
+paths:
+  data: data                       # UK Biobank extracts (files below)
+  upstream: results/typology       # typology outputs (derived/types_{sex}.parquet, ...)
+  out: results/outcome
+  refs: references                 # AgeTopicModels exports (b0) and optional .rda files
+
+# -- UK Biobank extracts (in paths.data) ---------------------------------------
+files:
+  first_occ: ukb_first_occurrences_data.csv   # first-occurrence fields (Date_/Source_of_report_ columns)
+  cancer: ukb_cancer_register_data.csv        # cancer registry (fields 40005, 40006, 40013, 40012)
+  death: ukb_death_data.tsv                   # death register: eid, ins_index, date_of_death
+  cov_baseline: ukb_covariates_baseline.csv   # eid, birth_date, centre, ethnic_group
+  cov_raw: ukb_covariates_raw.csv             # Qualifications__* (field 6138), Date_lost_to_follow_up__0_0 (field 191)
+  work_env: ukb_work_environment_data.csv     # When_occupational_data_entered__0_0 (time zero)
+  hesin: hesin.tsv                            # HES episodes: eid, ins_index, epistart, admidate
+  hesin_diag: hesin_diag.tsv                  # HES diagnoses: eid, ins_index, diag_icd10, diag_icd9
+
+# -- Time line -----------------------------------------------------------------
+timeline:
+  # time zero = completion date of the online work-history questionnaire
+  tz_col: When_occupational_data_entered__0_0
+  # administrative censoring of the death register; o1 warns if the data differ
+  death_censor: "2024-07-08"
+  # end of the cancer registry; null = last registration date in the data
+  cancer_censor: null
+  # Incident diagnoses share one window ending at the earlier of the cancer
+  # registry and death register end dates. Warn if it ends more than this many
+  # years before the death register.
+  max_window_gap_years: 2.0
+  lost_col: Date_lost_to_follow_up__0_0       # field 191; missing = not lost
+
+# -- First-occurrence fields ---------------------------------------------------
+first_occ:
+  date_re: '^Date_([A-Z]\d{2})_first_reported_.*__0_0$'
+  source_re: '^Source_of_report_of_([A-Z]\d{2})_.*__0_0$'
+  # Special dates (UKB coding 819). 1900-01-01, 1901-01-01, 1902-02-02 and
+  # 1903-03-03 (no date / before birth / at birth / in birth year) precede time
+  # zero and count as prevalent; 2037-07-07 (future placeholder) is unusable.
+  special_prevalent: ["1900-01-01", "1901-01-01", "1902-02-02", "1903-03-03"]
+  special_undated: ["2037-07-07"]
+  # codes read per pass over the file (two columns per code), bounds memory
+  codes_per_pass: 150
+
+# -- Cancer registry (sole source of chapter II; first occurrences have no C codes)
+cancer:
+  n_slots: 22                    # registry instances
+  date: Date_of_cancer_diagnosis
+  icd10: Type_of_cancer_ICD10
+  icd9: Type_of_cancer_ICD9
+  behaviour: Behaviour_of_cancer_tumour
+  # ICD-O-3 behaviour kept: 3 malignant primary, 6 metastatic
+  behaviour_keep: [3, 6]
+  # behaviour missing: keep C codes (malignant by definition), drop D codes
+  keep_c_when_behaviour_missing: true
+  # ICD-9-only registrations: malignant range 140-208 -> pseudo-code that
+  # counts towards chapter II only (no site, never a code-level column)
+  icd9_malignant: [140, 208]
+  icd9_pseudo_code: C_ICD9
+  # C44 (non-melanoma skin cancer) is a code-level column but excluded from the
+  # chapter II aggregate, which it would otherwise dominate
+  exclude_from_chapter: [C44]
+
+# -- Covariates ----------------------------------------------------------------
+covariates:
+  # Ethnic group, highest qualification, assessment centre, questionnaire year
+  # and (for prevalent disease and topics) a restricted cubic spline of age at
+  # time zero. Smoking, adiposity, alcohol, physical activity, deprivation and
+  # childhood conditions are not adjusted for (possible mediators).
+  group_a:
+    age_spline_knots: 4          # Harrell quantile knots
+    entry_year: true             # questionnaire completed after 2015
+    region: centre               # assessment-centre dummies
+    categorical: [ethnic_group, edu_highest]
+  # Highest qualification is rebuilt from all answers to field 6138
+  # (pipe-separated multiple choice). Source order: typology descriptives,
+  # else the raw field.
+  edu_source: [descriptives, cov_raw]
+  edu_rank: {1: 6, 2: 5, 5: 4, 6: 3, 3: 2, 4: 1, -7: 0}   # field 6138 code -> rank (higher = more)
+  edu_labels: {6: Degree, 5: A level, 4: NVQ/HND/HNC, 3: Other professional,
+               2: O level/GCSE, 1: CSE, 0: None of the above}
+  edu_min_coverage: 0.95         # stop if the rebuilt variable covers less
+  min_level_n: 200               # categorical levels smaller than this -> "Other"
+  missing_as_level: true         # missing categories form an explicit level
+  design_rank_tol: 1.0e-8        # collinear design columns below this are dropped
+
+# -- Prevalent disease (o2) ------------------------------------------------------
+op:
+  min_prevalence: 0.02           # code-level outcomes: sex-specific lifetime prevalence
+  min_cell_cases: 10             # cells with fewer cases are suppressed
+  firth_below: 5                 # Firth penalty if a group has fewer cases
+  fdr_alpha: 0.05                # BH within sex x level (chapter, code)
+  null_n: 200                    # permutations of the global test
+  null_age_strata: 10            # deciles of age at time zero
+  null_seed: 20260917            # also seeds the bootstraps of s2 and s3
+  reference_camsis_col: camsis_mean   # column of typology camsis.parquet used to rank types
+
+# -- ICD-10 chapters (three-character code -> chapter) ---------------------------
+# D spans chapters II and III, H spans VII and VIII. The data contain chapters
+# I-XVII only.
+icd_chapters:
+  - {roman: I,     letters: [A, B], label: "Infectious & parasitic"}
+  - {roman: II,    ranges: ["C00-C99", "D00-D48"], label: "Neoplasms"}
+  - {roman: III,   ranges: ["D50-D89"], label: "Blood & immune"}
+  - {roman: IV,    letters: [E], label: "Endocrine, nutritional & metabolic"}
+  - {roman: V,     letters: [F], label: "Mental & behavioural"}
+  - {roman: VI,    letters: [G], label: "Nervous system"}
+  - {roman: VII,   ranges: ["H00-H59"], label: "Eye & adnexa"}
+  - {roman: VIII,  ranges: ["H60-H95"], label: "Ear & mastoid"}
+  - {roman: IX,    letters: [I], label: "Circulatory"}
+  - {roman: X,     letters: [J], label: "Respiratory"}
+  - {roman: XI,    letters: [K], label: "Digestive"}
+  - {roman: XII,   letters: [L], label: "Skin & subcutaneous"}
+  - {roman: XIII,  letters: [M], label: "Musculoskeletal"}
+  - {roman: XIV,   letters: [N], label: "Genitourinary"}
+  - {roman: XV,    letters: [O], label: "Pregnancy & childbirth"}
+  - {roman: XVI,   letters: [P], label: "Perinatal"}
+  - {roman: XVII,  letters: [Q], label: "Congenital malformations"}
+
+# -- Prospective analyses (s0-s3) -----------------------------------------------
+# Attained age is the time scale with left truncation at time zero. Each type
+# is compared with all other types of the same sex.
+surv:
+  # Piecewise-exponential Poisson models on bands of this width (years) between
+  # band_min and band_max; equivalent to Cox models with a stepwise baseline.
+  model_band: 5.0
+  band_min: 40.0
+  band_max: 90.0
+  # age grid [start, stop, step] for cumulative incidence and MCF curves
+  curve_grid: [45.0, 85.0, 0.5]
+  # ages where fewer participants are at risk are not reported (per sex and type)
+  min_at_risk: 250
+  min_cell_events: 10            # cells with fewer events are suppressed
+  firth_below: 5                 # Firth penalty if a group has fewer events
+  fdr_alpha: 0.05
+  fdr_by: [sex, analysis]        # BH families
+  # incident disease: every code with at least this many events after time zero
+  min_code_events: 100
+  # disease-free life (healthspan): first of the components below
+  healthspan:
+    components:
+      - {name: Cancer,   label: "Malignant neoplasm",      prefix: [C], exclude: [C44]}
+      - {name: Diabetes, label: "Diabetes mellitus",       codes: [E10, E11, E12, E13, E14]}
+      - {name: MI,       label: "Myocardial infarction",   codes: [I21, I22]}
+      - {name: HF,       label: "Heart failure",           codes: [I50]}
+      - {name: Stroke,   label: "Stroke",                  codes: [I60, I61, I62, I63, I64]}
+      - {name: COPD,     label: "COPD / chronic bronchitis", codes: [J41, J42, J43, J44]}
+      - {name: Dementia, label: "Dementia",                codes: [F00, F01, F02, F03, G30]}
+      - {name: Death,    label: "Death (any cause)",       death: true}
+    # disease-free years between these ages
+    years_from: 60.0
+    years_to: 80.0
+    # reference = type with the fewest disease-free years among types with at
+    # least worst_min_events events; warn if it is the worst in fewer than
+    # worst_rank_warn of the bootstrap samples
+    worst_min_events: 200
+    worst_rank_warn: 0.50
+    decomp_boot: 2000            # bootstrap replicates (percentile intervals)
+    aj_min_at_risk_end: 50       # warn if fewer at risk at years_to
+  # accumulation of diagnoses (distinct codes after time zero)
+  dxrate:
+    target_count: 3.0            # age at reaching this mean number of new diagnoses
+    boot: 200                    # bootstrap replicates for that age difference
+
+# -- Comorbidity topics (b0-b4) ------------------------------------------------
+# The ten published age-dependent topics of Jiang et al. (Nat Genet 2023;
+# 55:1854-1865; R package AgeTopicModels, UKB_HES_10topics over 349 phecodes)
+# are used without refitting; lifetime hospital diagnoses are projected onto
+# the published loadings.
+ob:
+  # vocabulary: phecodes with at least this many records in UK Biobank HES
+  min_occurrence: 500
+  code_letters: "A-N"            # ICD-10 first letters kept (as in Jiang et al.)
+  min_dx_fit: 2                  # topic weights need >= 2 diagnoses; share analysis set
+  age_range: [0.5, 89.9]         # ages at diagnosis kept (package requires (0, 90])
+  hes:
+    date_cols: [epistart, admidate]   # episode date: epistart, else admidate
+    date_format: "%Y-%m-%d"
+    chunksize: 2000000           # hesin_diag rows per chunk
+    min_merge_rate: 0.95         # stop if fewer diagnoses match an episode
+  phecode:
+    map_file: phecode_icd10.csv  # exported by R/b0_export_phecode.R
+  naming:
+    name_top_chapters: 3         # chapter-based fallback names: top chapters
+    assign_threshold: 0.50       # disease assigned to a topic if mean assignment > this
+  assoc:
+    estimands: [share, burden]
+    min_cell_n: 10               # type x topic cells of smaller types are suppressed
+    fdr_alpha: 0.05              # BH within sex x estimand
+    null_n: 1000
+    null_age_strata: 10
+    null_seed: 20260920

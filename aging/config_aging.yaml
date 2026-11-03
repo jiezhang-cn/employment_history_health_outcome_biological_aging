@@ -1,0 +1,305 @@
+# Career types x biological aging: configuration for R/e1 (field extraction) and py/a0-a5 (analysis).
+# All thresholds, knots and sample rules live here. Cohort, sex split and type labels come from the
+# typology config (config.yaml at the repository root).
+# Relative paths are resolved against the repository root.
+
+paths:
+  # UKB main phenotype table (ukbconv `25056-2.0`, ukbtools `f.25056.2.0` and RAP `p25056_i2_a0`
+  # headers are all recognised). e1 --main a.csv,b.csv reads several basket files instead.
+  main_file: data/ukb_main_dataset.csv
+  # Clock feature lists built from the source papers' supplements (see README)
+  feature_lists: references/clock_feature_lists
+  out: results/aging
+  # Withdrawn participants: one eid per line, no header (negative eids are always dropped)
+  withdraw: data/withdraw.csv
+  # rfMRI connectivity bulk files from ukbfetch ({eid}_{field}_{instance}_0.txt)
+  fc_bulk_dir: data/rfMRI
+  # Typology outputs (derived/cohort.parquet, types_{sex}.parquet, ...)
+  upstream: results/typology
+  # e1 outputs
+  extract: results/aging/extract
+  # UKB-derived participant-level tables (files: below)
+  data: data
+  # Published resources (clock coefficients, feature lists, Data-Coding 143)
+  refs: references
+
+files:
+  first_occ: ukb_first_occurrences_data.csv    # first occurrences, 3-character ICD-10 (no C codes)
+  cancer: ukb_cancer_register_data.csv         # cancer registry (malignancies)
+  death: ukb_death_data.tsv
+  cov_baseline: ukb_covariates_baseline.csv    # assessment date, birth date, centre at instance 0
+  cov_raw: ukb_covariates_raw.csv              # raw Qualifications (education is rebuilt from it)
+  # UKB-PPP Olink long table (eid / ins_index / protein_id / result, NPX); or a1 --olink-long PATH
+  olink_long: olink_data.txt
+
+
+# ── e1: field extraction ───────────────────────────────────────────
+extract:
+  # Imaging instances: 2 = first imaging visit (used), 3 = repeat imaging (extracted, not analysed)
+  instances: [2, 3]
+  # Row gate: keep participants with an attendance date (field 53) at these instances (imaging cohort)
+  gate_field: 53
+  # Columns per fread call (bounds peak memory)
+  chunk_cols: 400
+
+  # Feature groups: lists under paths.feature_lists (columns field / short_name / label / system|organ)
+  feature_groups:
+    brain_tian:           # Tian et al. 2023, Table S2 (2,309 IDPs)
+      list: tian_brain_2309.csv
+      # Field 25751 (S2 connectivity edges) is not available; connectivity comes from fc: below
+      skip_fields: [25751]
+    mri_multi:            # MULTI Consortium 2026, eFile1 (6 non-brain organs; 21090 is shared by two)
+      list: multi_mri_6organs.csv
+
+  # Additional groups: field -> short name. instances: all = every instance.
+  # gate: false = keep all participants (no imaging row gate).
+  extra_groups:
+    covariates:
+      instances: all
+      fields:
+        "31": sex                   # 0 = female, 1 = male
+        "34": birth_year
+        "52": birth_month
+        "53": date_attend
+        "54": centre
+    imaging_qc:
+      instances: [2, 3]
+      fields:
+        # brain technical covariates (C-B)
+        "25000": t1_vol_scaling         # volumetric scaling from T1 to standard space (head size)
+        "25734": t1_inv_snr
+        "25732": t1_discrep_nonlinear
+        "25741": rfmri_motion
+        "25756": scanner_x
+        "25757": scanner_y
+        "25758": scanner_z
+        "25759": scanner_table
+        # abdominal error indicators (measurements set to missing when flagged) and protocol (C-M)
+        "23357": vat_error
+        "23358": asat_error
+        "23359": ant_thigh_error_L
+        "23360": post_thigh_error_L
+        "23361": ant_thigh_error_R
+        "23362": post_thigh_error_R
+        "40063": liver_acq_protocol
+    # Blood-based clocks (C-L), instance 0, whole cohort.
+    # Units as released by UKB: albumin g/L, creatinine umol/L, glucose mmol/L, CRP mg/L, ALP U/L,
+    # urea mmol/L, cholesterol mmol/L, HbA1c mmol/mol, MCV fL, RDW %, lymphocytes %, WBC 10^9/L,
+    # FEV1 L, SBP mmHg
+    blood:
+      gate: false
+      instances: [0]
+      fields:
+        "30000": wbc
+        "30040": mcv
+        "30070": rdw
+        "30180": lymph_pct
+        "30600": albumin
+        "30610": alp
+        "30670": urea
+        "30690": cholesterol
+        "30700": creatinine
+        "30710": crp
+        "30740": glucose
+        "30750": hba1c
+        "4080": sbp_auto            # automated reading (two arrays)
+        "93": sbp_manual            # manual reading, used when automated is missing
+        "20150": fev1_best          # best FEV1 after spirometry QC
+        "3063": fev1                # FEV1 per blow (max used when 20150 is missing)
+        "74": fasting_time          # hours fasted (technical covariate; glucose is non-fasting)
+        "22192": ltl_z              # leukocyte telomere length, adjusted, log-transformed and z-scored
+
+# ── e1: rfMRI connectivity from bulk files ─────────────────────────
+# Field 25752: partial correlation, dimension 25; 21 good components -> 210 edges.
+# (Tian et al. used field 25751, full correlation at dimension 100, which is no longer available.)
+fc:
+  field: 25752
+  n_edges: 210         # upper triangle in file order
+  prefix: fc_d25p      # columns fc_d25p_0001 ... fc_d25p_0210, output e1_fc_d25p.csv.gz
+  label: rfMRI partial correlation matrix, dimension 25
+  # UKB good-component list (1-based ICA indices). Edge k of the file = k-th element of the upper
+  # triangle in column-major order (FMRIB netmat convention); used only to label edges.
+  good_components: data/rfMRI_GoodComponents_d25_v1.txt
+
+# ==================================================================
+# Analysis (py/a0-a5)
+# ==================================================================
+
+measure:
+  # Proteomic and blood-based clocks: baseline instance 0; MRI clocks: first imaging visit, instance 2
+  protein_instance: 0
+  # Continuous age = (measurement date - birth date) / 365.25, birth day set to the 15th
+  birth_day: 15
+  # Administrative censoring date for mortality
+  death_censor: "2024-07-08"
+
+# ── Disease-free (CN) reference subset: C-M / C-B training, C-C LOWESS baseline, KDM / HD ──
+cn:
+  # Tian et al. 2023 Table S7 (ICD-10 codes truncated to 3 characters to match first occurrences)
+  # plus malignancies from the cancer registry
+  s7_table: clock_feature_lists/tian_s7_disease_codes.csv
+  categories: all                  # or a list of categories
+  use_cancer_register: true
+  cancer_behaviour_keep: [3, 6]    # malignant / metastatic; missing behaviour counts as malignant
+  # First-occurrence placeholder dates meaning "before measurement, date unknown"
+  prevalent_dates: ["1900-01-01", "1901-01-01", "1902-02-02", "1903-03-03"]
+  # Placeholder for "no date": treated as disease (cannot be shown to occur after measurement)
+  undated_date: "2037-07-07"
+  undated_as_disease: true
+  extra_ranges: []                 # optional extra 3-character ICD-10 ranges, e.g. ["I00-I99"]
+
+# ── Proteomic clocks: C-P (Oh et al. 2025) and C-C (Ding et al. 2026) ──
+protein:
+  cache_stem: olink_model_proteins      # derived/{stem}_long_i0.parquet caches the model proteins
+  coding143: uniprot_meaning            # UKB Data-Coding 143 (coding -> "GENE;protein name")
+  long_chunk_rows: 5000000
+  # Participants missing >= this share of model proteins are excluded
+  max_person_missing_frac: 0.343
+  # Guard against pre-standardised input: median |column mean| < mean_tol and median |SD - 1| < sd_tol
+  # means the data are already z-scored and the published training scaler cannot be applied
+  prezscored_check: {mean_tol: 0.02, sd_tol: 0.02}
+  impute:
+    k: 152                 # KNN imputation, k = sqrt(training n) as in Oh et al.
+    ref_n: 20000           # reference set drawn from the participants with fewest missing values
+    chunk: 4000
+    seed: 20260923
+  oh:
+    weights: clock_feature_lists/oh2025_weights_long.csv
+    scaler: clock_feature_lists/oh2025_training_scaler_ST3.csv
+    st9: oh2025_organage_media-1.xlsx     # published mortality HRs (sheet ST9), reported alongside V2
+    extreme_z: 1.5
+    # Accuracy benchmark: r(predicted, age) per clock
+    benchmark_r: {Conventional: .913, Organismal: .901, Brain: .714, Artery: .713, Liver: .617,
+                  Immune: .552, Intestine: .468, Lung: .359, Heart: .337, Pancreas: .334,
+                  Muscle: .314, Adipose: .257, Kidney: .158}
+  ding:
+    coef: clock_feature_lists/ding_cellage_coef_long.csv
+    models: clock_feature_lists/ding_cellage_models.csv
+    retained_only: true    # 48 clocks = 36 cell types + 12 lineages
+    lowess_frac: 0.6667    # LOWESS span 2/3, fitted in CN participants only
+    extreme_z: 2.0
+  # Blood-measured clocks are also analysed in participants who left work before the blood draw
+  restrict_to_left_before_draw: true
+
+# ── C-M: MRI organ clocks retrained with the MULTI method ──────────
+multi:
+  organs: [heart, adipose, liver, spleen, kidney, pancreas]
+  holdout_n: 500
+  n_repeats: 50
+  test_frac: 0.2
+  inner_cv: 10
+  lasso_alphas: {n: 25, lo: -4, hi: 0}     # logspace(lo, hi, n) on standardised features
+  svr_C: [0.001, 0.01, 0.1, 1.0]
+  svr_max_iter: 20000
+  min_train_n: 300
+  n_jobs: 8                # parallel jobs for the inner grid search
+  seed: 20260923
+  # Abdominal error indicators -> affected measurements (short names without _i{k}).
+  # Any value other than ok_values sets that measurement to missing.
+  error_ok_values: ["0"]
+  error_map:
+    vat_error: [Visceral_fat_volume]
+    asat_error: [Abdominal_subcutaneous_adipose_tissue_volume_ASAT]
+    ant_thigh_error_L: [Anterior_thigh_fat_free_muscle_volume_L, Anterior_thigh_muscle_fat_infiltration_MFI_L]
+    post_thigh_error_L: [Posterior_thigh_fat_free_muscle_volume_L, Posterior_thigh_muscle_fat_infiltration_MFI_L]
+    ant_thigh_error_R: [Anterior_thigh_fat_free_muscle_volume_R, Anterior_thigh_muscle_fat_infiltration_MFI_R]
+    post_thigh_error_R: [Posterior_thigh_fat_free_muscle_volume_R, Posterior_thigh_muscle_fat_infiltration_MFI_R]
+  paper_mae: {heart: 4.23, liver: 5.60, kidney: 5.67, adipose: 4.97, pancreas: 5.67, spleen: 5.82}
+
+# ── C-B: brain MRI clocks following Tian et al. 2023 ───────────────
+tian:
+  # Subgroups from the e1 dictionary; fc: true adds the 210 connectivity edges
+  models:
+    GM: {subgroups: [GM], fc: false}
+    WM: {subgroups: [WM], fc: false}
+    FC: {subgroups: [], fc: true}
+    whole: {subgroups: [GM, WM, whole_brain_only], fc: true}
+  n_folds: 20
+  by_sex: true
+  # MATLAB fitrsvm defaults used by Tian et al.: BoxConstraint = iqr(age)/1.349, Epsilon = iqr(age)/13.49
+  svr_C_div: 1.349
+  svr_eps_div: 13.49
+  svr_max_iter: 20000
+  min_train_n: 300
+  seed: 20260923
+
+# ── C-L: blood-based clocks (instance 0, whole cohort) ─────────────
+#   PhenoAge  Levine et al. 2018 published formula
+#   KDM       Klemera-Doubal biological age, fitted by sex in CN participants (BioAge kdm_calc)
+#   HD        homeostatic dysregulation: ln Mahalanobis distance from a young CN reference by sex
+#   LTL       field 22192 with its sign reversed (higher = shorter telomeres = older)
+# gapy units differ (PhenoAge / KDM years, HD ln distance, LTL SD); compare clocks on gapz only.
+blood:
+  clocks: [PhenoAge, KDM, HD, LTL]
+  # Short names = e1_blood columns without _i0; sbp / fev1 are combined in a1b (build_markers)
+  kdm_markers: [fev1, sbp, cholesterol, hba1c, albumin, creatinine, crp, alp, urea]
+  pheno_markers: [albumin, creatinine, glucose, crp, lymph_pct, mcv, rdw, alp, wbc]
+  hd_markers: [albumin, alp, cholesterol, creatinine, crp, fev1, glucose, hba1c, lymph_pct, mcv, rdw,
+               sbp, urea, wbc]
+  log_markers: [crp]          # log-transformed before KDM / HD
+  winsor_sd: 5                # KDM / HD inputs clipped to mean +/- 5 SD within sex
+  max_missing: 0              # KDM: markers allowed missing per person (0 = complete cases)
+  kdm_train: cn               # cn = train in CN participants; all = whole sample
+  hd_ref_age: 50              # HD reference: CN and younger than this age
+  min_train_n: 500
+  ltl_field: ltl_z
+  extreme_z: 1.5
+  units: {PhenoAge: years, KDM: years, HD: ln distance, LTL: SD (-LTL)}
+
+# Computed and validated, but not analysed for associations (non-organ proteomic clocks)
+exclude_clocks:
+  C-P: [Conventional, Organismal]
+
+# ── Clock validation (a3), before any association analysis ────────
+validation:
+  v1_r_tol: 0.05        # published coefficients: r >= benchmark - 0.05
+  v1_mae_tol: 1.0       # retrained C-M: MAE <= published MAE + 1 year
+  v2_alpha: 0.05        # all-cause mortality Cox (age, sex): HR per SD > 1 and p < alpha
+  v2_min_events: 20     # fewer deaths -> V2 not assessable (treated as failed)
+  v7_coverage_min: 0.90
+  v7_missing_weight_max: 0.10
+  family_exit_on_v2: true   # a family with no clock passing V2 is flagged as failed
+
+# ── Covariates (shared definitions with the outcome module) ────────
+covariates:
+  age_knots: 4             # restricted cubic spline of age at measurement
+  min_level_n: 200         # small levels of categorical covariates pooled into Other
+  missing_as_level: true
+  design_rank_tol: 1.0e-8
+  edu_source: [descriptives, cov_raw]
+  edu_min_coverage: 0.95
+  edu_rank: {1: 6, 2: 5, 5: 4, 6: 3, 3: 2, 4: 1, -7: 0}
+  edu_labels: {6: Degree, 5: A level, 4: NVQ/HND/HNC, 3: Other professional,
+               2: O level/GCSE, 1: CSE, 0: None of the above}
+  # Technical covariates by family (e1_imaging_qc short names at instance 2; C-L from e1_blood, instance 0)
+  tech:
+    C-B: [t1_vol_scaling, t1_inv_snr, t1_discrep_nonlinear, rfmri_motion, scanner_x, scanner_y, scanner_z, scanner_table]
+    C-M: [liver_acq_protocol]
+    C-P: []
+    C-C: []
+    C-L: [fasting_time]
+  season: true             # sin/cos(2*pi*day of year/365.25) and year of measurement
+
+# ── Career axes ────────────────────────────────────────────────────
+axes:
+  continuous: [camsis_mean, camsis_slope, camsis_change, exposure_breadth, longest_agent_years,
+               n_moves, net_displacement]
+  agents: [noisy, cold, hot, dusty, fumes, cigarette, asbestos, paints, pesticides, diesel]
+  long_hours_threshold: 48       # h/week (long hours = more than this)
+
+# ── a4: career type vs rest, career axes, extreme agers ────────────
+qa:
+  min_type_n: 50                # type or the other types below this -> not tested (grey)
+  fdr_alpha: 0.10               # BH within sex x family x sample x analysis x clock
+
+# ── a5: lifetime intensities (mean annual intensity over working years before measurement) ──
+qb:
+  # Eleven lifetime intensities; the annual share of the ten agents with any exposure (agent_breadth)
+  # is reported separately as its own FDR family.
+  axes: [camsis_low, night_share, long_hours, noisy, dusty, fumes, cigarette, asbestos, paints,
+         pesticides, diesel]
+  aux_axes: [agent_breadth]
+  camsis_low_q: [0.05, 0.95]    # low status = (p95 - CAMSIS) / (p95 - p5), clipped to [0, 1], by sex
+  min_years: 3                  # fewer working years before measurement -> missing
+  grey_min_n: 50                # fewer exposed participants -> not tested (grey)
+  fdr_alpha: 0.10               # BH within sex x family x sample x axis group x clock

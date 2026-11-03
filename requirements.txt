@@ -1,0 +1,11 @@
+numpy
+pandas
+pyarrow
+scipy
+PyYAML
+scikit-learn
+statsmodels
+openpyxl
+torch>=2.6
+python-igraph
+leidenalg

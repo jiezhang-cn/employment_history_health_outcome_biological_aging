@@ -1,0 +1,20 @@
+# Data and outputs are never committed
+data/
+results/
+references/
+molecular/ref/
+*.csv
+*.csv.gz
+*.tsv
+*.txt
+*.parquet
+*.npz
+*.npy
+*.pt
+*.rda
+*.xlsx
+*.json
+__pycache__/
+*.pyc
+.Rhistory
+!requirements.txt
