@@ -1,11 +1,10 @@
 # Employment history, health outcomes and biological aging in UK Biobank
 
 Analysis code for the study relating lifetime work histories of 117,588 UK Biobank participants to
-prevalent and incident disease, comorbidity topics, disease-free life, 73 biological aging clocks and
+prevalent and incident disease, comorbidity topics, disease-free life, biological aging clocks and
 molecular and neuroimaging features.
 
-The code covers the main analyses reported in the paper. Figure code and sensitivity analyses are not
-included. No data are included: UK Biobank data are available to approved researchers through
+The code covers the main analyses reported in the paper. No data are included: UK Biobank data are available to approved researchers through
 https://www.ukbiobank.ac.uk/enable-your-research.
 
 ## Modules
@@ -19,21 +18,6 @@ https://www.ukbiobank.ac.uk/enable-your-research.
 
 Each module has a README with its run order, required inputs and outputs. Settings and thresholds are
 in the YAML files (`config.yaml` for `typology/`, one `config_*.yaml` per other module).
-
-## Order of execution
-
-```
-typology  ->  outcome
-typology  ->  aging  ->  molecular
-```
-
-All commands are run from the repository root. Paths in the configuration files are relative to it:
-
-```
-data/          UK Biobank extracts (not distributed)
-references/    published resources (CAMSIS scores, clock coefficients, feature lists, gene sets; see module READMEs)
-results/       outputs, one subdirectory per module
-```
 
 ## Software
 
